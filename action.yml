@@ -1,0 +1,21 @@
+name: 'Custom Action'
+description: 'Does something, idk'
+inputs:
+  owner:
+    description: 'The owner of the repository'
+    required: true
+  repo:
+    description: 'The name of the repository'
+    required: true
+  branch:
+    description: 'The branch name affected by the workflow'
+    required: true
+  token:
+    description: 'The token to use to access the GitHub API'
+    required: true
+  newTagName:
+    description: 'The new tag to create'
+    required: true
+runs:
+  using: 'node16'
+  main: 'dist/index.js'
