@@ -8471,6 +8471,18 @@ var __webpack_exports__ = {};
 const core = __nccwpck_require__(2186);
 const github = __nccwpck_require__(5438);
 
+const owner = core.getInput('owner', {required: true});
+const repo = core.getInput('repo', {required: true});
+const branch = core.getInput('branch', {required: true});
+const token = core.getInput('token', {required: true});
+const newTagName = core.getInput('newTagName', {required: true});
+
+const octokit = new github.getOctokit(token);
+
+function handleError(message) {
+    throw new Error(message);
+}
+
 function isTagValid(newTag, latestTag) {
     let currentDate = new Date();
     let currentYear = currentDate.getUTCFullYear() % 100;
@@ -8479,101 +8491,109 @@ function isTagValid(newTag, latestTag) {
     return tagRegex.test(newTag) && newTag > latestTag;
 }
 
-function handleError(message) {
-    throw new Error(message);
+async function getLatestTagInfo() {
+    const {data: latestTags} = await octokit.rest.repos.listTags({
+        owner: owner,
+        repo: repo,
+        per_page: 1,
+        page: 1
+    });
+
+    let latestTagSha = '', latestTagName = '';
+    if (latestTags.length) {
+        latestTagSha = latestTags[0]['commit']['sha'];
+        latestTagName = latestTags[0]['name'];
+    }
+
+    return {latestTagSha, latestTagName};
+}
+
+async function getMergeCommitMessagesList(latestTagSha) {
+    let mergeCommitsMessages = [];
+    paginate:
+        for await (const response of octokit.paginate.iterator(
+            octokit.rest.repos.listCommits,
+            {
+                owner: owner,
+                repo: repo,
+                sha: branch,
+            }
+        )) {
+            for (const commit of response.data) {
+                let commitMessage = commit['commit']['message'].split('\n\n')[0];
+                if (commit['sha'] === latestTagSha) {
+                    break paginate;
+                }
+                if (commitMessage.startsWith('Merge pull request')) {
+                    mergeCommitsMessages.unshift(commitMessage);
+                }
+            }
+        }
+
+    if (!mergeCommitsMessages.length) {
+        handleError('No merge commits found');
+    }
+    return mergeCommitsMessages;
+}
+
+async function getLatestCommitSha() {
+    const {data: latestCommits} = await octokit.rest.repos.listCommits({
+        owner: owner,
+        repo: repo,
+        sha: branch,
+        per_page: 1,
+        page: 1
+    });
+
+    if (!latestCommits.length) {
+        handleError('No commits found');
+    }
+    return latestCommits[0]['sha'];
+}
+
+async function createAnnotatedTag(latestCommitSha, tagName) {
+    await octokit.rest.git.createTag({
+        owner: owner,
+        repo: repo,
+        tag: tagName,
+        message: tagName,
+        object: latestCommitSha,
+        type: 'commit'
+    });
+    await octokit.rest.git.createRef({
+        owner: owner,
+        repo: repo,
+        ref: `refs/tags/${tagName}`,
+        sha: latestCommitSha
+    });
+}
+
+async function createRelease(tagName, mergeCommitMessages) {
+    await octokit.rest.repos.createRelease({
+        owner: owner,
+        repo: repo,
+        tag_name: tagName,
+        name: tagName,
+        draft: false,
+        prerelease: false,
+        body: mergeCommitMessages.map(commit => `- ${commit}\n`).join('')
+    });
 }
 
 
 const main = async () => {
     try {
-        let latestTagName = '';
-        let latestTagSha = '';
-        let latestCommitSha = '';
-        let pageNumber = 1;
-        let exitLoops = false;
-        let mergeCommitsMessages = [];
-
-        const owner = core.getInput('owner', {required: true});
-        const repo = core.getInput('repo', {required: true});
-        const branch = core.getInput('branch', {required: true});
-        const token = core.getInput('token', {required: true});
-        const newTagName = core.getInput('newTagName', {required: true});
-
-        const octokit = new github.getOctokit(token);
-
-        const {data: latestTags} = await octokit.rest.repos.listTags({
-            owner: owner,
-            repo: repo,
-            per_page: 1,
-            page: 1
-        });
-
-        if (latestTags.length) {
-            latestTagSha = latestTags[0]['commit']['sha'];
-            latestTagName = latestTags[0]['name'];
-        }
+        let {latestTagSha, latestTagName} = await getLatestTagInfo();
 
         if (!isTagValid(newTagName, latestTagName)) {
             handleError(`Tag is not valid: ${newTagName}`);
         }
-        while (true) {
-            const {data: listCommits} = await octokit.rest.repos.listCommits({
-                owner: owner,
-                repo: repo,
-                sha: branch,
-                page: pageNumber
-            });
-            if (!listCommits.length) {
-                break;
-            }
-            if (latestCommitSha === '') {
-                latestCommitSha = listCommits[0]['sha'];
-            }
-            for (const commit of listCommits) {
-                let commitMessage = commit['commit']['message'].split('\n\n')[0];
-                let commitSha = commit['sha'];
-                if (commitSha === latestTagSha) {
-                    exitLoops = true;
-                    break;
-                }
-                if (commitMessage.startsWith('Merge pull request')) {
-                    mergeCommitsMessages.unshift(`- ${commitMessage}\n`)
-                }
-            }
-            if (exitLoops) {
-                break;
-            }
-            pageNumber++;
-        }
 
-        if (!mergeCommitsMessages.length) {
-            handleError('No merge commits found');
-        }
+        let mergeCommitMessages = await getMergeCommitMessagesList(latestTagSha);
+        let latestCommitSha = await getLatestCommitSha();
 
-        await octokit.rest.git.createTag({
-            owner: owner,
-            repo: repo,
-            tag: newTagName,
-            message: newTagName,
-            object: latestCommitSha,
-            type: 'commit'
-        });
-        await octokit.rest.git.createRef({
-            owner: owner,
-            repo: repo,
-            ref: `refs/tags/${newTagName}`,
-            sha: latestCommitSha
-        });
-
-        await octokit.rest.repos.createRelease({
-            owner: owner,
-            repo: repo,
-            tag_name: newTagName,
-            name: newTagName,
-            draft: false,
-            prerelease: false,
-            body: mergeCommitsMessages.join('')
-        });
+        await createAnnotatedTag(latestCommitSha, newTagName);
+        await createRelease(newTagName, mergeCommitMessages);
 
     } catch (error) {
         core.setFailed(error.message);
