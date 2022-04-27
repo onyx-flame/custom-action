@@ -8551,28 +8551,12 @@ async function getLatestCommitSha() {
     return latestCommits[0]['sha'];
 }
 
-async function createAnnotatedTag(latestCommitSha, tagName) {
-    await octokit.rest.git.createTag({
-        owner: owner,
-        repo: repo,
-        tag: tagName,
-        message: tagName,
-        object: latestCommitSha,
-        type: 'commit'
-    });
-    await octokit.rest.git.createRef({
-        owner: owner,
-        repo: repo,
-        ref: `refs/tags/${tagName}`,
-        sha: latestCommitSha
-    });
-}
-
-async function createRelease(tagName, mergeCommitMessages) {
+async function createRelease(tagName, latestCommitSha, mergeCommitMessages) {
     await octokit.rest.repos.createRelease({
         owner: owner,
         repo: repo,
         tag_name: tagName,
+        target_commitish: latestCommitSha,
         name: tagName,
         draft: false,
         prerelease: false,
@@ -8592,8 +8576,7 @@ const main = async () => {
         let mergeCommitMessages = await getMergeCommitMessagesList(latestTagSha);
         let latestCommitSha = await getLatestCommitSha();
 
-        await createAnnotatedTag(latestCommitSha, newTagName);
-        await createRelease(newTagName, mergeCommitMessages);
+        await createRelease(newTagName, latestCommitSha, mergeCommitMessages);
 
     } catch (error) {
         core.setFailed(error.message);
